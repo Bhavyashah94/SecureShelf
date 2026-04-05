@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureShelf | CCTV AI Intelligence</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>SECURESHELF <span style="opacity: 0.5; font-weight: 300;">| CCTV INTELLIGENCE v4</span></h1>
+    </header>
+
+    <div class="main-container">
+        <section class="feed-section">
+            <div class="cctv-grid">
+                <div class="cam-box">
+                    <span class="cam-tag">CAM 01 | LIVE</span>
+                    <img id="videoFeed0" src="{{ url_for('video_feed', sid=0) }}" alt="CAM 01">
+                </div>
+                <div class="cam-box">
+                    <span class="cam-tag">CAM 02 | LIVE</span>
+                    <img id="videoFeed1" src="{{ url_for('video_feed', sid=1) }}" alt="CAM 02">
+                </div>
+            </div>
+            <div class="feed-info">
+                <div class="feed-label">
+                    <span>SYSTEM QUAD-VIEW ACTIVE</span>
+                </div>
+                <div class="feed-label">
+                    <span id="systemTime">19:04:11</span>
+                </div>
+            </div>
+        </section>
+
+        <aside class="sidebar">
+            <div class="card">
+                <h2>Security Status</h2>
+                <div id="statusValue" class="status-value">SAFE</div>
+            </div>
+
+            <div class="card">
+                <h2>Confidence Score</h2>
+                <div id="confidenceValue" style="font-size: 1.5rem; font-weight: 600;">0.00%</div>
+            </div>
+
+            <div class="card" style="flex: 1; min-height: 0;">
+                <h2>Activity Log</h2>
+                <div id="activityLog">
+                    <div class="alert-item">System started...</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button id="nextCam">Cycle Next Camera</button>
+                <div style="font-size: 0.75rem; color: var(--muted); text-align: center;">SECURESHELF REAL-TIME AI</div>
+            </div>
+        </aside>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

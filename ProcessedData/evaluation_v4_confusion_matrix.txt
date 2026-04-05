@@ -1,0 +1,12 @@
+=== V4 Model Evaluation (Held-out Test Split) ===
+Test samples: 37
+Accuracy: 89.19%
+
+Confusion Matrix (rows=true, cols=pred)
+           Pred Normal  Pred Shoplifting
+True Normal      17             1
+True Shoplift     3            16
+
+Per-class metrics:
+Normal      | Precision: 0.850  Recall: 0.944  F1: 0.895
+Shoplifting | Precision: 0.941  Recall: 0.842  F1: 0.889
