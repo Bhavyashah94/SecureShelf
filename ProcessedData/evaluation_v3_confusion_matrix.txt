@@ -1,0 +1,12 @@
+=== V3 BiLSTM Evaluation (Held-out Test Split) ===
+Test samples: 37
+Accuracy: 86.49%
+
+Confusion Matrix (rows=true, cols=pred)
+           Pred Normal  Pred Shoplifting
+True Normal      17             1
+True Shoplift     4            15
+
+Per-class metrics:
+Normal      | Precision: 0.810  Recall: 0.944  F1: 0.872
+Shoplifting | Precision: 0.938  Recall: 0.789  F1: 0.857

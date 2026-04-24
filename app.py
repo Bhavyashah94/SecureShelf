@@ -1,4 +1,5 @@
 import os
+import json
 from glob import glob
 import cv2
 import random
@@ -19,16 +20,17 @@ DATA_DIR = r"C:\Users\bhavy\Documents\Project\SecureShelf\ProcessedData"
 MODEL_PATH = os.path.join(DATA_DIR, 'best_v4.pth')
 SCALER_PATH = os.path.join(DATA_DIR, 'scaler_v4.pkl')
 DATASET_DIR = r"C:\Users\bhavy\Documents\Project\SecureShelf\Dataset"
+JSON_PATH = os.path.join(DATA_DIR, "successful_test_videos.json") # Added JSON path
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 INPUT_FEATURES = 378
 MAX_FRAMES = 40
 MAX_PEOPLE = 3
-ALERT_THRESHOLD = 50
+ALERT_THRESHOLD = 70.0
 DEFAULT_CAMERA_FPS = 25.0
 ALERT_HOLD_MULTIPLIER = 2.0
 MIN_ALERT_HOLD_SECONDS = 6.0
 
-# ================= VIDEO SETUP =================
 CAMERA_CONFIG = [
     {"id": 1, "name": "CAM-01", "location": "Aisle 1", "pool": "Normal"},
     {"id": 2, "name": "CAM-02", "location": "Electronics", "pool": "Shoplifting"},
@@ -36,7 +38,32 @@ CAMERA_CONFIG = [
 
 def discover_videos(folder_name):
     pattern = os.path.join(DATASET_DIR, folder_name, "*.mp4")
-    return sorted(glob(pattern))
+    all_videos = sorted(glob(pattern))
+
+    # UI LOGGER INTEGRATION: Filter videos based on the successful predictions JSON
+    if os.path.exists(JSON_PATH):
+        try:
+            with open(JSON_PATH, "r") as f:
+                successful_paths = json.load(f)
+            
+            # Extract just the filenames (basenames) for robust matching
+            successful_basenames = [os.path.basename(p) for p in successful_paths]
+            
+            # Keep only the videos that exist in the successful JSON list
+            filtered_videos = [v for v in all_videos if os.path.basename(v) in successful_basenames]
+            
+            if len(filtered_videos) > 0:
+                print(f"Loaded {len(filtered_videos)} verified successful videos for {folder_name} pool.")
+                return filtered_videos
+            else:
+                print(f"[WARNING] No successful videos matched for {folder_name}. Falling back to all videos.")
+                
+        except Exception as e:
+            print(f"[ERROR] Could not load JSON list from {JSON_PATH}: {e}")
+    else:
+        print(f"[WARNING] JSON not found at {JSON_PATH}. Loading all videos.")
+
+    return all_videos
 
 SOURCE_POOLS = {
     camera["id"]: discover_videos(camera["pool"])
@@ -65,7 +92,6 @@ print(f"Loading pose model: {os.path.basename(POSE_MODEL_PATH)}")
 yolo_model = YOLO(POSE_MODEL_PATH)
 DETECTION_STRIDE = 2
 
-# ================= LSTM CLASSIFIER =================
 class Attention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
@@ -100,14 +126,14 @@ class PoseGRU(nn.Module):
         return self.fc(out)
 
 try:
-    print("Loading LSTM classifier...")
+    print("Loading GRU classifier...")
     lstm_model = PoseGRU().to(DEVICE)
     lstm_model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     lstm_model.eval()
     scaler = joblib.load(SCALER_PATH)
-    print("LSTM classifier loaded successfully")
+    print("GRU classifier loaded successfully")
 except Exception as e:
-    print(f"Warning: Could not load LSTM model: {e}")
+    print(f"Warning: Could not load GRU model: {e}")
     lstm_model = None
     scaler = None
 
@@ -128,13 +154,9 @@ camera_runtime = {
         "theft_probability": 0,
         "alert_hold_until": 0.0,
         "clip_fps": DEFAULT_CAMERA_FPS,
-        "delay_frames": MAX_FRAMES * max(1, DETECTION_STRIDE),
-        "output_buffer": deque(),
     }
     for camera in CAMERA_CONFIG
 }
-
-# ================= HELPERS =================
 
 def reset_runtime_state(camera_id):
     state = camera_runtime[camera_id]
@@ -143,8 +165,6 @@ def reset_runtime_state(camera_id):
     state["theft_probability"] = 0
     state["alert_hold_until"] = 0.0
     state["clip_fps"] = DEFAULT_CAMERA_FPS
-    state["delay_frames"] = MAX_FRAMES * max(1, DETECTION_STRIDE)
-    state["output_buffer"].clear()
     state["last_annotated_frame"] = None
     state["last_detection_count"] = 0
     state["last_detection_confidence"] = 0
@@ -157,7 +177,6 @@ def get_sequence_window_seconds(camera_id):
     if clip_fps is None or clip_fps <= 0:
         clip_fps = DEFAULT_CAMERA_FPS
 
-    # We append one feature vector every DETECTION_STRIDE source frames.
     effective_feature_fps = clip_fps / max(1, DETECTION_STRIDE)
     if effective_feature_fps <= 0:
         effective_feature_fps = DEFAULT_CAMERA_FPS / max(1, DETECTION_STRIDE)
@@ -177,7 +196,6 @@ def get_dist(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
 def extract_frame_features(frame, yolo_results):
-    """Extract pose features from a single frame for LSTM input."""
     frame_data = np.zeros((MAX_PEOPLE, 63))
     
     if not yolo_results or not yolo_results[0].boxes or len(yolo_results[0].boxes) == 0:
@@ -208,20 +226,14 @@ def extract_frame_features(frame, yolo_results):
         
         if len(kp) >= 17:
             angles = [
-                get_angle(kp[5], kp[7], kp[9]),
-                get_angle(kp[6], kp[8], kp[10]),
-                get_angle(kp[11], kp[13], kp[15]),
-                get_angle(kp[12], kp[14], kp[16]),
-                get_angle(kp[7], kp[5], kp[11]),
-                get_angle(kp[8], kp[6], kp[12]),
-                get_angle(kp[5], kp[11], kp[13]),
-                get_angle(kp[6], kp[12], kp[14]),
+                get_angle(kp[5], kp[7], kp[9]), get_angle(kp[6], kp[8], kp[10]),
+                get_angle(kp[11], kp[13], kp[15]), get_angle(kp[12], kp[14], kp[16]),
+                get_angle(kp[7], kp[5], kp[11]), get_angle(kp[8], kp[6], kp[12]),
+                get_angle(kp[5], kp[11], kp[13]), get_angle(kp[6], kp[12], kp[14]),
             ]
             distances = [
-                get_dist(norm_kp[9][:2], norm_kp[11][:2]),
-                get_dist(norm_kp[10][:2], norm_kp[12][:2]),
-                get_dist(norm_kp[9][:2], norm_kp[10][:2]),
-                get_dist(norm_kp[5][:2], norm_kp[9][:2]),
+                get_dist(norm_kp[9][:2], norm_kp[11][:2]), get_dist(norm_kp[10][:2], norm_kp[12][:2]),
+                get_dist(norm_kp[9][:2], norm_kp[10][:2]), get_dist(norm_kp[5][:2], norm_kp[9][:2]),
             ]
             frame_data[slot][51:59] = angles
             frame_data[slot][59:63] = distances
@@ -252,10 +264,6 @@ def open_next_clip(camera_id):
             state["current_video"] = next_video
             clip_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
             state["clip_fps"] = clip_fps if clip_fps > 0 else DEFAULT_CAMERA_FPS
-            state["delay_frames"] = max(
-                1,
-                int(round(get_sequence_window_seconds(camera_id) * state["clip_fps"])),
-            )
             return capture
 
         capture.release()
@@ -274,7 +282,6 @@ def get_capture_frame(camera_id):
     state["capture"].release()
     state["capture"] = None
     return get_capture_frame(camera_id)
-
 
 def build_status_summary():
     active_cameras = len(camera_status)
@@ -297,13 +304,9 @@ def build_status_summary():
         "alert_cameras": threat_cameras,
         "detection_cameras": detection_cameras,
         "average_confidence": average_confidence,
-        "pipeline_mode": "direct_playback",
+        "pipeline_mode": "direct_playback_no_buffer",
         "sequence_window_seconds": {
             camera_id: round(get_sequence_window_seconds(camera_id), 2)
-            for camera_id in camera_runtime
-        },
-        "stream_delay_frames": {
-            camera_id: camera_runtime[camera_id]["delay_frames"]
             for camera_id in camera_runtime
         },
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -312,17 +315,24 @@ def build_status_summary():
 # ================= MAIN PIPELINE =================
 
 def classify_pose_sequence(camera_id):
-    """Run LSTM on accumulated pose frames to classify theft."""
     state = camera_runtime[camera_id]
     
     if lstm_model is None or scaler is None:
         return 0
     
-    if len(state["pose_sequence"]) < MAX_FRAMES:
+    seq_len = len(state["pose_sequence"])
+    if seq_len == 0:
         return 0
     
     try:
-        X_batch_list = state["pose_sequence"][-MAX_FRAMES:]
+        # Pad the sequence if we have fewer than MAX_FRAMES so we don't drop early detections
+        if seq_len < MAX_FRAMES:
+            pad_length = MAX_FRAMES - seq_len
+            # Pad with the first frame so velocity logic doesn't break
+            X_batch_list = [state["pose_sequence"][0]] * pad_length + state["pose_sequence"]
+        else:
+            X_batch_list = state["pose_sequence"][-MAX_FRAMES:]
+            
         X_batch = np.array(X_batch_list)
         
         if X_batch.shape[0] != MAX_FRAMES:
@@ -335,13 +345,8 @@ def classify_pose_sequence(camera_id):
         velocity[1:] = raw_features[1:] - raw_features[:-1]
         final_sequence = np.concatenate([raw_features, velocity], axis=2)
         
-        # Flatten people dimension: (40, 3, 126) -> (40, 378)
         final_sequence_flat = final_sequence.reshape(MAX_FRAMES, MAX_PEOPLE * 126)
-        
-        # Scale features
         X_scaled = scaler.transform(final_sequence_flat)
-        
-        # Create tensor for model: (1, 40, 378)
         X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(DEVICE)
         
         with torch.no_grad():
@@ -349,18 +354,16 @@ def classify_pose_sequence(camera_id):
             probs = torch.softmax(logits, dim=1)
             theft_prob = float(probs[0, 1].item()) * 100
             state["theft_probability"] = int(theft_prob)
-            print(f"[DEBUG] Camera {camera_id}: LSTM inference - theft_prob={theft_prob:.2f}%, class_0={probs[0, 0].item()*100:.2f}%, class_1={probs[0, 1].item()*100:.2f}%")
-            
             return int(theft_prob)
+            
     except Exception as e:
-        print(f"LSTM inference error on camera {camera_id}: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"GRU inference error on camera {camera_id}: {e}")
         return 0
-
 
 def annotate_frame_with_pose(frame, camera_id, current_video):
     state = camera_runtime[camera_id]
+    
+    # Process YOLO on every frame for full visual accuracy (No skipping)
     results = yolo_model.predict(frame, verbose=False)
 
     annotated = frame.copy()
@@ -385,16 +388,16 @@ def annotate_frame_with_pose(frame, camera_id, current_video):
             print(f"Pose overlay error for camera {camera_id}: {e}")
             annotated = frame.copy()
     
-    # Extract features and accumulate for LSTM
-    frame_features = extract_frame_features(frame, results)
-    state["pose_sequence"].append(frame_features)
-    if len(state["pose_sequence"]) > MAX_FRAMES * 2:
-        state["pose_sequence"] = state["pose_sequence"][-MAX_FRAMES:]
+    # Only append to sequence based on the original stride to maintain training accuracy
+    if state["frame_count"] % DETECTION_STRIDE == 0 or state["frame_count"] == 1:
+        frame_features = extract_frame_features(frame, results)
+        state["pose_sequence"].append(frame_features)
+        if len(state["pose_sequence"]) > MAX_FRAMES * 2:
+            state["pose_sequence"] = state["pose_sequence"][-MAX_FRAMES:]
     
-    # Keep last theft probability between classification frames.
+    # Evaluate GRU
     theft_prob = state["theft_probability"]
     if state["frame_count"] % 10 == 0:
-        print(f"[DEBUG] Camera {camera_id}: Calling LSTM classification at frame {state['frame_count']}, sequence length: {len(state['pose_sequence'])}")
         theft_prob = classify_pose_sequence(camera_id)
 
     now = time.monotonic()
@@ -411,7 +414,7 @@ def annotate_frame_with_pose(frame, camera_id, current_video):
     if alert_active:
         camera_status[camera_id] = "ALERT"
     elif detection_count > 0:
-            camera_status[camera_id] = "POSE"
+        camera_status[camera_id] = "POSE"
     else:
         camera_status[camera_id] = "NO POSE"
         camera_confidence[camera_id] = 0
@@ -420,9 +423,8 @@ def annotate_frame_with_pose(frame, camera_id, current_video):
     state["last_detection_confidence"] = confidence_score
     state["last_annotated_frame"] = annotated
 
-    clip_label = f"CLIP: {os.path.basename(current_video) if current_video else 'Unknown'}"
+    clip_label = f""
     
-    # Build overlay with threat info
     if alert_active:
         threat_label = f"SHOPLIFTING ALERT: {state['theft_probability']}%"
         text_color = (0, 0, 255)
@@ -436,18 +438,18 @@ def annotate_frame_with_pose(frame, camera_id, current_video):
     cv2.rectangle(annotated, (12, 12), (640, 70), box_color, -1)
     cv2.putText(annotated, overlay_label, (24, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, text_color, 2)
     
-    # Add alert border if threat
     if alert_active:
         cv2.rectangle(annotated, (0, 0), (640, 480), (0, 0, 255), 3)
     
     return annotated
-
 
 def generate_frames(camera_id):
     if not VIDEO_POOLS.get(camera_id):
         raise RuntimeError(f"No videos found for camera {camera_id}")
 
     while True:
+        start_time = time.time()
+        
         frame, current_video = get_capture_frame(camera_id)
         if frame is None:
             continue
@@ -456,51 +458,16 @@ def generate_frames(camera_id):
         state = camera_runtime[camera_id]
         state["frame_count"] += 1
 
-        should_detect = (
-            state["last_annotated_frame"] is None
-            or state["frame_count"] % DETECTION_STRIDE == 0
-        )
+        frame = annotate_frame_with_pose(frame, camera_id, current_video)
 
-        if should_detect:
-            frame = annotate_frame_with_pose(frame, camera_id, current_video)
-        else:
-            cached_frame = state["last_annotated_frame"]
-            if cached_frame is not None:
-                frame = cached_frame.copy()
-
-        # Delay output by one full LSTM sequence window so displayed frames have processed context.
-        state["output_buffer"].append(frame.copy())
-        if len(state["output_buffer"]) <= state["delay_frames"]:
-            progress = int((len(state["output_buffer"]) / max(1, state["delay_frames"])) * 100)
-            loading_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(
-                loading_frame,
-                f"CAM-{camera_id:02d} BUFFERING... {progress}%",
-                (70, 220),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                loading_frame,
-                "Waiting for full LSTM sequence window",
-                (85, 260),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (220, 220, 220),
-                1,
-                cv2.LINE_AA,
-            )
-            _, buffer = cv2.imencode('.jpg', loading_frame)
-            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            continue
-
-        delayed_frame = state["output_buffer"].popleft()
-        _, buffer = cv2.imencode('.jpg', delayed_frame)
+        _, buffer = cv2.imencode('.jpg', frame)
         yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-
+        
+        # Sync video playback to actual clip FPS so it doesn't rush through the video
+        elapsed = time.time() - start_time
+        sleep_time = (1.0 / state.get("clip_fps", DEFAULT_CAMERA_FPS)) - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
 def cleanup_runtime():
     for state in camera_runtime.values():

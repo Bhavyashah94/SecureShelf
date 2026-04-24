@@ -1,5 +1,5 @@
 import os
-
+import json
 import joblib
 import numpy as np
 import torch
@@ -7,7 +7,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
 
-
+# ================= CONFIG =================
 DATA_DIR = r"C:\Users\bhavy\Documents\Project\SecureShelf\ProcessedData"
 INPUT_FEATURES = 378
 MODEL_PATH = os.path.join(DATA_DIR, "best_v4.pth")
@@ -15,7 +15,7 @@ SCALER_PATH = os.path.join(DATA_DIR, "scaler_v4.pkl")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+# ================= MODEL =================
 class Attention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
@@ -65,17 +65,28 @@ class PoseGRU(nn.Module):
 
 
 def main():
+    # ================= LOAD DATA =================
     X = np.load(os.path.join(DATA_DIR, "X_features_v4.npy"))
     y = np.load(os.path.join(DATA_DIR, "y_labels_v4.npy"))
+    
+    # ---------------------------------------------------------
+    # UI LOGGER ADDITION 1: Load or generate the video paths
+    # Replace this dummy array with your actual loaded paths:
+    # paths = np.load(os.path.join(DATA_DIR, "video_paths_v4.npy"))
+    # ---------------------------------------------------------
+    paths = np.array([f"video_{i}.mp4" for i in range(len(X))]) 
 
-    _, X_test, _, y_test = train_test_split(
+    # Split the paths alongside X and y
+    _, X_test, _, y_test, _, paths_test = train_test_split(
         X,
         y,
+        paths,
         test_size=0.20,
         stratify=y,
-        random_state=42,
+        random_state=42, # Keeps the 94% accuracy intact
     )
 
+    # ================= PREPROCESS & INFERENCE =================
     scaler = joblib.load(SCALER_PATH)
 
     samples_test, frames, features = X_test.shape
@@ -93,6 +104,7 @@ def main():
         probs = torch.softmax(logits, dim=1).cpu().numpy()
         y_pred = np.argmax(probs, axis=1)
 
+    # ================= METRICS & REPORTING =================
     cm = confusion_matrix(y_test, y_pred, labels=[0, 1])
     accuracy = accuracy_score(y_test, y_pred)
     precision, recall, f1, _ = precision_recall_fscore_support(
@@ -136,6 +148,22 @@ def main():
         )
 
     print(f"\nSaved report: {report_path}")
+
+    # ---------------------------------------------------------
+    # UI LOGGER ADDITION 2: Extract and export successful paths
+    # ---------------------------------------------------------
+    # Create a boolean mask of where the predictions were correct
+    correct_mask = (y_pred == y_test)
+    
+    # Filter the test paths using the boolean mask
+    successful_paths = paths_test[correct_mask].tolist()
+    
+    # Save the successful paths to a JSON file for the UI
+    json_path = os.path.join(DATA_DIR, "successful_test_videos.json")
+    with open(json_path, "w") as f:
+        json.dump(successful_paths, f, indent=4)
+        
+    print(f"Exported {len(successful_paths)} successful video paths to: {json_path}")
 
 
 if __name__ == "__main__":

@@ -5,70 +5,71 @@ document.addEventListener('DOMContentLoaded', () => {
     const systemTime = document.getElementById('systemTime');
     const nextCam = document.getElementById('nextCam');
 
-    let streamStates = { 0: "SAFE", 1: "SAFE" };
+    // Updated to use Camera IDs 1 and 2
+    let streamStates = { 1: "PLAYBACK", 2: "PLAYBACK" };
 
     const addLog = (camId, message, isCritical = false) => {
         const item = document.createElement('div');
         item.className = `alert-item ${isCritical ? 'critical' : ''}`;
-        item.textContent = `${new Date().toLocaleTimeString()} - [CAM ${camId+1}] ${message}`;
+        item.textContent = `${new Date().toLocaleTimeString()} - [CAM ${camId}] ${message}`;
         activityLog.prepend(item);
         if (activityLog.children.length > 30) activityLog.lastChild.remove();
     };
 
     const updateStatus = async () => {
         try {
-            const response = await fetch('/api/status');
+            // FIXED: Pointing to /status instead of /api/status
+            const response = await fetch('/status');
             const data = await response.json();
             
             let globalCritical = false;
-            let avgConf = 0;
-            let count = 0;
+            
+            // FIXED: Using the average_confidence provided directly by your backend
+            let avgConf = data.average_confidence || 0; 
 
-            for (let sid in data) {
+            // FIXED: Iterating through data.status instead of the root data object
+            for (let sid in data.status) {
                 const sidInt = parseInt(sid);
-                const pred = data[sid];
-                if (!pred || pred.prediction === "None") continue;
+                const currentStatus = data.status[sid];
+                
+                const isAlert = currentStatus === "ALERT";
+                if (isAlert) globalCritical = true;
 
-                if (pred.prediction !== "Initializing...") {
-                    const isAlert = pred.prediction === "Shoplifting";
-                    if (isAlert) globalCritical = true;
-                    avgConf += pred.confidence;
-                    count++;
-
-                    if (pred.prediction !== streamStates[sidInt]) {
-                        addLog(sidInt, `Detection changed to ${pred.prediction}`, isAlert);
-                        streamStates[sidInt] = pred.prediction;
-                    }
+                // If the status has changed (e.g., PLAYBACK -> ALERT), log it
+                if (currentStatus !== streamStates[sidInt]) {
+                    addLog(sidInt, `Detection changed to ${currentStatus}`, isAlert);
+                    streamStates[sidInt] = currentStatus;
                 }
             }
 
             // Update Summary UI
             statusValue.textContent = globalCritical ? "ALERT" : "SAFE";
             statusValue.className = `status-value ${globalCritical ? 'status-alert' : 'status-normal'}`;
-            confidenceValue.textContent = count > 0 ? `${((avgConf / count) * 100).toFixed(2)}%` : "0.00%";
+            confidenceValue.textContent = `${avgConf}%`;
 
             // Update system time
             systemTime.textContent = new Date().toLocaleTimeString();
             
         } catch (err) {
-            console.error("Status polling failed", err);
+            console.error("Status polling failed:", err);
         }
     };
 
-    const cycleAll = async () => {
+    const reconnectStreams = () => {
         nextCam.disabled = true;
-        addLog(-1, "Cycling all cameras...", false);
-        for (let i = 0; i < 2; i++) {
-            const res = await fetch(`/api/random_video?id=${i}`);
-            const data = await res.json();
+        addLog("SYS", "Reconnecting camera streams...", false);
+        
+        // Loop through cameras 1 and 2 and force the browser to reload the image source
+        for (let i = 1; i <= 2; i++) {
             const img = document.getElementById(`videoFeed${i}`);
-            img.src = `/video_feed/${i}?t=${new Date().getTime()}`;
+            if (img) img.src = `/video_feed/${i}?t=${new Date().getTime()}`;
         }
-        nextCam.disabled = false;
+        
+        setTimeout(() => { nextCam.disabled = false; }, 2000);
     };
 
-    nextCam.addEventListener('click', cycleAll);
-    nextCam.textContent = "Cycle All Cameras";
+    nextCam.addEventListener('click', reconnectStreams);
+    nextCam.textContent = "Reconnect Cameras";
 
     // Initial polling
     setInterval(updateStatus, 1000);
